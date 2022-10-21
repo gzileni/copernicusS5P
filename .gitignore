@@ -1,4 +1,4 @@
 datasets/*
-download/node_modules
+node_modules
 process/env/*
 .DS_Store
