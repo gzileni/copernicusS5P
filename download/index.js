@@ -3,12 +3,12 @@ import _ from 'lodash';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createWriteStream } from 'node:fs';
-import * as parser from 'xml2json';
 import { MultiProgressBars } from 'multi-progress-bars';
 import * as chalk from 'chalk';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import dotenv from 'dotenv'
+import dotenv from 'dotenv';
+import {XMLParser, XMLBuilder, XMLValidator} from 'fast-xml-parser';
 
 dotenv.config({ path: '../.env' })
 const __filename = fileURLToPath(import.meta.url);
@@ -82,38 +82,47 @@ const _getFootPrintName = (location) => {
  */
 async function makeDirectory(location, product) {
   const projectFolder = join(__dirname, '..', 'datasets', _getFootPrintName(location), product.key);
-  const dirCreation = await mkdir(projectFolder, { recursive: true });
-  return [dirCreation, projectFolder];
+  await mkdir(projectFolder, { recursive: true });
+  return projectFolder;
 }
 
 /**
  * 
  */
-async function processResponse (responseXml) {
-    return await new Promise((resolve, reject) => {
-        const result = []
-        const resultJSon = JSON.parse(parser.toJson(responseXml));
-        _.forEach(resultJSon["feed"]["entry"], entry => {
+function processResponse (responseXml) {
+    const result = [];
 
-            const date = _.find(entry["date"], d => {
-                return d["name"] === "ingestiondate"
-            });
+    mpb.addTask('Process XML', { type: 'percentage', message: 'Processing ... ' });
+    mpb.updateTask('Process XML', { percentage: 0 });
+    console.log(responseXml);
+    const parser = new XMLParser();
+    let resultJSon = parser.parse(responseXml);
+    console.log(JSON.stringify(resultJSon));
+    let idx = 0;
+    
+    _.forEach(resultJSon["feed"]["entry"], entry => {
 
-            const link = _.find(entry["link"], l => {
-                return !l["rel"]
-            })
-
-            const item = {
-                title: entry.title,
-                date: date["$t"],
-                link: link["href"]
-            };
-
-            result.push(item);
+        const date = _.find(entry["date"], d => {
+            return d["name"] === "ingestiondate"
         });
 
-        resolve(_.sortBy(result, ['date', 'title'] ));
+        const link = _.find(entry["link"], l => {
+            return !l["rel"]
+        })
+
+        const item = {
+            title: entry.title,
+            date: date["$t"],
+            link: link["href"]
+        };
+
+        result.push(item);
+        mpb.updateTask('Searcher', { percentage: idx / _.size(resultJSon["feed"]["entry"]) });
+        idx++;
     });
+
+    mpb.done('Process XML', { message: 'Process finished.' });
+    return _.sortBy(result, ['date', 'title'] );
 }
 
 /**
@@ -121,11 +130,11 @@ async function processResponse (responseXml) {
  */
 async function download(dir, link, name) {
 
-    return await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
 
         let dataset = createWriteStream(`${dir}/${name}`);
 
-        const req = https.get(link, options, res => {
+        https.get(link, options, res => {
             
             let len = parseInt(res.headers['content-length'], 10);
             let cur = 0;
@@ -159,24 +168,32 @@ async function download(dir, link, name) {
  * @returns 
  */
 async function search(location, product) {
-    return await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
 
         let url = `https://s5phub.copernicus.eu/dhus/search?q=`
         const footprint = `footprint:"Intersects(${location.value})"`;
         const range = ` AND ${process.env.RANGE}`;
         const productType = ` AND producttype:${product["name"]}`;
         url += `${footprint}${range}${productType}`;
+
+        mpb.addTask('Searcher', { type: 'percentage', message: 'Searching by ' + url });
+        mpb.updateTask('Searcher', { percentage: 0 });
         
         const req = https.get(url, options, res => {
-            var chunks = [];
+            let chunks = [];
             let len = parseInt(res.headers['content-length'], 10);
+            let cur = 0;
+            
             let response = {
                 err: null,
                 data: null
             };
 
             res.on("data", (chunk) => {
+                cur += chunk.length;
+                const perc = parseFloat((cur / len));
                 chunks.push(chunk);
+                mpb.updateTask('Searcher', { percentage: perc });
             });
 
             res.on("end", (chunk) => {
@@ -189,6 +206,7 @@ async function search(location, product) {
                                  null :
                                  'Non posso leggere i datasets da Copernicus'
 
+                mpb.done('Searcher', { message: 'Search finished.' });
                 resolve(response);
             });
 
@@ -207,26 +225,19 @@ async function search(location, product) {
  * 
  */
 async function main_downloads(dir, list) {
-    // let index_downloads = 0;
 
     _.forEach(list, l => {
         mpb.addTask(l.title, { type: 'percentage', barColorFn: chalk.yellow });
     });
     
 
-    const promises = _.map(list, async l => {
-        return await download(dir, l.link, l.title)
+    const promises = _.map(list, l => {
+        return download(dir, l.link, l.title)
     });
 
-    const files = await Promise.all(promises);
+    await Promise.all(promises);
     await mpb.promise;
 
-    /*
-    do {
-        const file = await download(dir, list[index_downloads].link, list[index_downloads].title)
-        index_downloads++;
-    } while (index_downloads < _.size(list))
-    */
 }
 
 /**
@@ -239,9 +250,9 @@ async function main_products(location, pollution) {
     });
 
     if (product) {
-        let [dir, dirStr] = await makeDirectory(location, product).catch(console.error);
+        let dirStr = await makeDirectory(location, product).catch(console.error);
         const resultXml = await search(location, product);
-        const listDownloads = await processResponse(resultXml.data);
+        const listDownloads = processResponse(resultXml.data);
         await main_downloads(dirStr, listDownloads);
     } else {
         console.error('ERROR: POLLUTION WRONG!');
