@@ -8,9 +8,10 @@ import * as chalk from 'chalk';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import dotenv from 'dotenv';
-import {XMLParser, XMLBuilder, XMLValidator} from 'fast-xml-parser';
+import axios from 'axios';
 
-dotenv.config({ path: '../.env' })
+dotenv.config({ path: '../.env' });
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const mpb = new MultiProgressBars({
@@ -68,6 +69,8 @@ const locations = [
 
 /**
  * 
+ * @param {*} location 
+ * @returns 
  */
 const _getFootPrintName = (location) => {
     let fpn = _.replace(location.name, "'", " ")
@@ -88,45 +91,10 @@ async function makeDirectory(location, product) {
 
 /**
  * 
- */
-function processResponse (responseXml) {
-    const result = [];
-
-    mpb.addTask('Process XML', { type: 'percentage', message: 'Processing ... ' });
-    mpb.updateTask('Process XML', { percentage: 0 });
-    console.log(responseXml);
-    const parser = new XMLParser();
-    let resultJSon = parser.parse(responseXml);
-    console.log(JSON.stringify(resultJSon));
-    let idx = 0;
-    
-    _.forEach(resultJSon["feed"]["entry"], entry => {
-
-        const date = _.find(entry["date"], d => {
-            return d["name"] === "ingestiondate"
-        });
-
-        const link = _.find(entry["link"], l => {
-            return !l["rel"]
-        })
-
-        const item = {
-            title: entry.title,
-            date: date["$t"],
-            link: link["href"]
-        };
-
-        result.push(item);
-        mpb.updateTask('Searcher', { percentage: idx / _.size(resultJSon["feed"]["entry"]) });
-        idx++;
-    });
-
-    mpb.done('Process XML', { message: 'Process finished.' });
-    return _.sortBy(result, ['date', 'title'] );
-}
-
-/**
- * 
+ * @param {*} dir 
+ * @param {*} link 
+ * @param {*} name 
+ * @returns 
  */
 async function download(dir, link, name) {
 
@@ -159,77 +127,18 @@ async function download(dir, link, name) {
             res.pipe(dataset);
         });
     });
-
 }
 
 /**
  * 
- * @param {*} product 
- * @returns 
- */
-async function search(location, product) {
-    return new Promise((resolve, reject) => {
-
-        let url = `https://s5phub.copernicus.eu/dhus/search?q=`
-        const footprint = `footprint:"Intersects(${location.value})"`;
-        const range = ` AND ${process.env.RANGE}`;
-        const productType = ` AND producttype:${product["name"]}`;
-        url += `${footprint}${range}${productType}`;
-
-        mpb.addTask('Searcher', { type: 'percentage', message: 'Searching by ' + url });
-        mpb.updateTask('Searcher', { percentage: 0 });
-        
-        const req = https.get(url, options, res => {
-            let chunks = [];
-            let len = parseInt(res.headers['content-length'], 10);
-            let cur = 0;
-            
-            let response = {
-                err: null,
-                data: null
-            };
-
-            res.on("data", (chunk) => {
-                cur += chunk.length;
-                const perc = parseFloat((cur / len));
-                chunks.push(chunk);
-                mpb.updateTask('Searcher', { percentage: perc });
-            });
-
-            res.on("end", (chunk) => {
-
-                response.data = res.statusCode === 200 ?
-                                Buffer.concat(chunks).toString('utf8') :
-                                null;
-                
-                response.err = res.statusCode === 200 ?
-                                 null :
-                                 'Non posso leggere i datasets da Copernicus'
-
-                mpb.done('Searcher', { message: 'Search finished.' });
-                resolve(response);
-            });
-
-            res.on("error", (error) => {
-                response.err = error
-                reject(response);
-            });
-        });
-
-        req.end();
-        
-    });
-}
-
-/**
- * 
+ * @param {*} dir 
+ * @param {*} list 
  */
 async function main_downloads(dir, list) {
 
     _.forEach(list, l => {
         mpb.addTask(l.title, { type: 'percentage', barColorFn: chalk.yellow });
     });
-    
 
     const promises = _.map(list, l => {
         return download(dir, l.link, l.title)
@@ -242,41 +151,82 @@ async function main_downloads(dir, list) {
 
 /**
  * 
+ * @param {*} entries 
+ * @returns 
  */
-async function main_products(location, pollution) {
-
-    const product = _.find(products, p => {
-        return p.key.toUpperCase() === pollution.toUpperCase()
+const getListDownloads = (entries) => {
+    let result = _.map(entries, entry => {
+        const link = _.find(entry.link, l => {
+            return !l["rel"]
+        });
+        return {
+            title: entry.title,
+            link: link["href"]
+        }
     });
-
-    if (product) {
-        let dirStr = await makeDirectory(location, product).catch(console.error);
-        const resultXml = await search(location, product);
-        const listDownloads = processResponse(resultXml.data);
-        await main_downloads(dirStr, listDownloads);
-    } else {
-        console.error('ERROR: POLLUTION WRONG!');
-    }
-
+    return result;
 }
 
 /**
  * 
+ * @param {*} location 
+ * @param {*} product 
+ * @returns 
+ */
+const getUrl = (location, product) => {
+    let url = `https://s5phub.copernicus.eu/dhus/search?q=`
+    const footprint = `footprint:"Intersects(${location.value})"`;
+    const range = ` AND ${process.env.RANGE}`;
+    const productType = ` AND producttype:${product["name"]}`;
+    url += `${footprint}${range}${productType}&format=json`;
+    return url
+}
+
+/**
+ * 
+ * @param {*} location 
+ * @param {*} pollution 
  */
 async function main(location, pollution) {
 
     const l = _.find(locations, o => {
         return o.name.toUpperCase() === location.toUpperCase()
-    })
+    });
 
-    if (location) {
+    const product = _.find(products, p => {
+        return p.key.toUpperCase() === pollution.toUpperCase()
+    });
+
+    mpb.addTask('Searcher', { type: 'indefinite', message: 'Searching ... ' });
+
+    if (l) {
         const projectFolder = join(__dirname, '..', 'datasets', _getFootPrintName(location));
         await mkdir(projectFolder, { recursive: true });
-        await main_products(l, pollution);
+        
+        if (product) {
+            let dirStr = await makeDirectory(l, product).catch(console.error);
+            let url = getUrl(l, product);
+            let entries = [];
+
+            try {
+                const response = await axios.get(url, { headers: { 'Authorization': `Basic czVwZ3Vlc3Q6czVwZ3Vlc3Q=` }});
+                entries = response.data.feed.entry;
+                const listLinks = getListDownloads(entries);
+                mpb.done('Searcher', { message: 'Search finished.' });
+                await main_downloads(dirStr, listLinks); 
+            } catch (e) {
+                mpb.done('Searcher', { message: 'Search ERROR.' });
+                console.error(e)
+            };
+        } else {
+            mpb.done('Searcher', { message: 'Search ERROR.' })
+            console.error('ERROR: POLLUTION WRONG!');
+        }
+
     } else {
+        mpb.done('Searcher', { message: 'Search ERROR.' })
         console.error('ERROR: LOCATION WRONG!');
     }
-    
     
 }
 
