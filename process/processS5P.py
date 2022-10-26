@@ -9,8 +9,12 @@ import xarray as xr
 import geopandas
 import matplotlib.pyplot as plt
 import glob
+import pandas as pd
+
 from re import sub
 from dotenv import load_dotenv
+
+import dask_geopandas
 
 dotenv_path = pathlib.Path('../.env')
 load_dotenv(dotenv_path=dotenv_path)
@@ -26,16 +30,32 @@ def processNETCD(dataset, path):
                                 decode_coords=True,
                                 parallel=True)
         
-        dset = dset.where(dset.qa_value >= 1, drop=True)
         df = dset.to_dask_dataframe()
+        df = df.loc[df["qa_value"] >= 0.75]
         print(df)
+        path_hdf = os.getenv('HDFS_PATH') + '/copernicus'
+        dask.dataframe.to_parquet(
+            df, path_hdf, append=True, engine='fastparquet', compression='gzip')
+        print('finish.')
         
-#def process(dataset, path):
-#    datas = xr.open_dataset(path, 
-#                            engine="netcdf4",
-#                            group="PRODUCT",
-#                            cache=True,
-#                            inline_array=True)
+def process(dataset, path):
+    dset = xr.open_dataset(path, 
+                            engine="netcdf4",
+                            group="PRODUCT",
+                            cache=True,
+                            inline_array=True)
+    df = dset.to_dask_dataframe()
+    df = df.loc[df["qa_value"] >= 0.75]
+    
+    ddf = df.set_geometry(
+        dask_geopandas.points_from_xy(df, 'latitude', 'longitude')
+    )
+    
+    print(ddf.head(5))
+    path_parquet = path + '.parquet'
+    ddf.to_parquet(path_parquet)
+    
+    print('finish.')
     # check integrity files
 #    print(dataset + ' ---> reading rows ---> ' + str(len(datas)))
 #    
@@ -90,7 +110,8 @@ def getPathDataset():
 def browseDatasets(path):
     for root, dirs, files in os.walk(path):
         for dataset in files:
-            processNETCD(dataset, path)
+            process(dataset, os.path.join(path, dataset))
+            # processNETCD(dataset, path)
                 
 def main():
     path = getPathDataset()
