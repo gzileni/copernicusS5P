@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import * as turf from '@turf/turf'
 
 dotenv.config({ path: '../.env' });
 
@@ -60,20 +61,13 @@ const products = [
     }
 ];
 
-const locations = [
-    {
-        name: 'Gioia del Colle',
-        value: '40.7779, 16.9115'
-    }
-]
-
 /**
  * 
  * @param {*} location 
  * @returns 
  */
 const _getFootPrintName = (location) => {
-    let fpn = _.replace(location.name, "'", " ")
+    let fpn = _.replace(location, "'", " ")
     fpn = _.snakeCase(fpn);
     return fpn.toLowerCase();
 }
@@ -83,8 +77,8 @@ const _getFootPrintName = (location) => {
  * @param {*} product 
  * @returns 
  */
-async function makeDirectory(location, product) {
-  const projectFolder = join(__dirname, '..', 'datasets', _getFootPrintName(location), product.key);
+async function makeDirectory(product) {
+  const projectFolder = join(__dirname, '..', 'datasets', _getFootPrintName(process.env.LOCATION), product.key);
   await mkdir(projectFolder, { recursive: true });
   return projectFolder;
 }
@@ -169,13 +163,28 @@ const getListDownloads = (entries) => {
 
 /**
  * 
+ * @returns 
+ */
+const _getFootprint = () => {
+    const bbox = process.env.BBOX.split(",")
+    const poly = turf.bboxPolygon(bbox);
+    const coordinates = _.map(poly.geometry.coordinates[0], c => {
+        return c.join(' ')
+    });
+    const coordinates_str = coordinates.join(',');
+    const fp = 'footprint:"Intersects(POLYGON((' + coordinates_str + ')))"'
+    return fp
+}
+
+/**
+ * 
  * @param {*} location 
  * @param {*} product 
  * @returns 
  */
-const getUrl = (location, product) => {
-    let url = `https://s5phub.copernicus.eu/dhus/search?q=`
-    const footprint = `footprint:"Intersects(${location.value})"`;
+const getUrl = (product) => {
+    let url = `https://s5phub.copernicus.eu/dhus/search?q=`;
+    const footprint = _getFootprint();
     const range = ` AND ${process.env.RANGE}`;
     const productType = ` AND producttype:${product["name"]}`;
     url += `${footprint}${range}${productType}&format=json`;
@@ -189,23 +198,19 @@ const getUrl = (location, product) => {
  */
 async function main(location, pollution) {
 
-    const l = _.find(locations, o => {
-        return o.name.toUpperCase() === location.toUpperCase()
-    });
-
     const product = _.find(products, p => {
         return p.key.toUpperCase() === pollution.toUpperCase()
     });
 
     mpb.addTask('Searcher', { type: 'indefinite', message: 'Searching ... ' });
 
-    if (l) {
-        const projectFolder = join(__dirname, '..', 'datasets', _getFootPrintName(location));
+    if (process.env.LOCATION) {
+        const projectFolder = join(__dirname, '..', 'datasets', _getFootPrintName(process.env.LOCATION));
         await mkdir(projectFolder, { recursive: true });
         
         if (product) {
-            let dirStr = await makeDirectory(l, product).catch(console.error);
-            let url = getUrl(l, product);
+            let dirStr = await makeDirectory(product).catch(console.error);
+            let url = getUrl(product);
             let entries = [];
 
             try {
