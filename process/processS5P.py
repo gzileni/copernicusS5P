@@ -9,7 +9,8 @@ import xarray as xr
 import geopandas
 import matplotlib.pyplot as plt
 import glob
-import pandas as pd
+import shapely.geometry
+import numpy as np
 
 from re import sub
 from dotenv import load_dotenv
@@ -18,25 +19,6 @@ import dask_geopandas
 
 dotenv_path = pathlib.Path('../.env')
 load_dotenv(dotenv_path=dotenv_path)
-
-def processNETCD(dataset, path):
-    pr_files = glob.glob(path + '/*')
-    pr_files.sort()
-    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
-        dset = xr.open_mfdataset(pr_files, engine="netcdf4",
-                                group="PRODUCT",
-                                decode_times=True,
-                                decode_timedelta=True,
-                                decode_coords=True,
-                                parallel=True)
-        
-        df = dset.to_dask_dataframe()
-        df = df.loc[df["qa_value"] >= 0.75]
-        print(df)
-        path_hdf = os.getenv('HDFS_PATH') + '/copernicus'
-        dask.dataframe.to_parquet(
-            df, path_hdf, append=True, engine='fastparquet', compression='gzip')
-        print('finish.')
         
 def process(dataset, path):
     dset = xr.open_dataset(path, 
@@ -47,13 +29,25 @@ def process(dataset, path):
     df = dset.to_dask_dataframe()
     df = df.loc[df["qa_value"] >= 0.75]
     
-    ddf = df.set_geometry(
-        dask_geopandas.points_from_xy(df, 'latitude', 'longitude')
-    )
+    ddf = df.set_geometry(dask_geopandas.points_from_xy(
+        df, 'latitude', 'longitude')).set_crs(4326)
     
-    print(ddf.head(5))
-    path_parquet = path + '.parquet'
-    ddf.to_parquet(path_parquet)
+    # creare geo dataset from bbox
+    bbox_coordinates = str(os.getenv('BBOX')).split(',')
+    x = np.array(bbox_coordinates)
+    y = x.astype(np.float64)
+    
+    p1 = shapely.geometry.box(*y, ccw=True)
+    gp_bbox_poly = geopandas.GeoDataFrame(geometry=geopandas.GeoSeries([p1]), crs=4326)
+    dgp_bbox_poly = dask_geopandas.from_geopandas(gp_bbox_poly, chunksize=1000)
+    print(dgp_bbox_poly.head(5))
+    # intersect geo dataframe 
+    ddf_intersect = dask_geopandas.GeoDataFrame.sjoin(ddf, dgp_bbox_poly)
+    
+    if (len(ddf_intersect)):
+        print(ddf_intersect.head(5))
+        path_parquet = path + '.parquet'
+        ddf.to_parquet(path_parquet)
     
     print('finish.')
     # check integrity files
@@ -111,11 +105,9 @@ def browseDatasets(path):
     for root, dirs, files in os.walk(path):
         for dataset in files:
             process(dataset, os.path.join(path, dataset))
-            # processNETCD(dataset, path)
                 
 def main():
     path = getPathDataset()
-    print('path: ' + path)
     browseDatasets(path)
     
 main()
