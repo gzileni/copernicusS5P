@@ -1,0 +1,52 @@
+version: '3.8'
+services:
+  db:
+    container_name: copernicus-postgis
+    image: postgis/postgis:14-3.2-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGPORT: ${PGPORT}
+      PGHOST: ${PGHOST}
+    healthcheck:
+      test: [ 'CMD-SHELL', 'pg_isready -U ${POSTGRES_DATABASE_NAME}' ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - ${PGPORT}:${PGPORT}
+    networks:
+      - copernicus-network
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    
+  pgAdmin:
+    # wharp-db.hextra.dev
+    container_name: copernicus-pgadmin
+    image: dpage/pgadmin4
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGHOST: ${PGHOST}
+      PGPORT: ${PGPORT}
+    networks:
+      - copernicus-network
+    ports:
+      - '8081:80'
+    depends_on:
+      - db
+
+networks:
+   copernicus-network:
+      driver: bridge
+      ipam:
+         driver: default
+         config:
+            - subnet: 192.168.199.0/24
+
+volumes:
+  db:
+    driver: local

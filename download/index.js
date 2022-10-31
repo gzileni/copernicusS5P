@@ -187,7 +187,7 @@ const getUrl = (product) => {
     const footprint = _getFootprint();
     const range = ` AND ${process.env.RANGE}`;
     const productType = ` AND producttype:${product["name"]}`;
-    url += `${footprint}${range}${productType}&format=json`;
+    url += `${footprint}${range}${productType}&rows=100&start=0&format=json`;
     return url
 }
 
