@@ -1,23 +1,24 @@
 #!/usr/bin/python3
 
-import sys
 import pathlib
 import os
-
 import xarray as xr
 import geopandas
 import matplotlib.pyplot as plt
 import shapely.geometry
 import numpy as np
+import zarr
+import dask_geopandas
+import dask
 
 from re import sub
 from dotenv import load_dotenv
-
-import dask_geopandas
-
+from dask.distributed import Client
+from multiprocessing import Process, freeze_support
 from sqlalchemy import *
 from sqlalchemy.engine import create_engine
 from sqlalchemy.schema import *
+from progress.spinner import Spinner
 
 dotenv_path = pathlib.Path('../.env')
 load_dotenv(dotenv_path=dotenv_path)
@@ -28,68 +29,102 @@ url = "postgresql://" + os.getenv('POSTGRES_USER') + ":" + os.getenv('POSTGRES_P
 engine = create_engine(url)
   
 def process(dataset, path):
-    print('open dataset by ---> ' + path)
-    dset = xr.open_dataset(path, 
-                            engine="netcdf4",
-                            group="PRODUCT",
-                            cache=True,
-                            inline_array=True)
     
-    # -----------------------------------------------------
-    # filter value 
-    # print('filtering value by quality datas ...')
+    with dask.config.set(**{'array.slicing.split_large_chunks': True}):
+        spinner = Spinner('Processing ---> ' + dataset + ' ')
+        spinner.next()
+        
+        chunksSize = 100
+        chunks = {
+            "time": chunksSize,
+            "latitude": chunksSize,
+            "longitude": chunksSize
+        }
+        
+        try:
+            dset = xr.open_dataset(path,
+                                engine="netcdf4",
+                                group="PRODUCT",
+                                cache=True,
+                                inline_array=True,
+                                chunks=chunks)
+            print(dset.head(5))
+            #dset = dset.where(dset.qa_value >= 0.75)
+            print('\nDim: ' + str(dset.nbytes * (2 ** -30)) + ' GB')
+            spinner.next()
+        except:
+            os.remove(path)
+            spinner.next()
+            return False
+        
+        # -----------------------------------------------------
+        # creare geo dataset from bbox
+        print('\ncreating bbox dataframe ... ')
+        bbox_coordinates = str(os.getenv('BBOX')).split(',')
+        x = np.array(bbox_coordinates)
+        y = x.astype(np.float64)
+        p1 = shapely.geometry.box(*y, ccw=True)
+        gp_bbox_poly = geopandas.GeoDataFrame(
+            geometry=geopandas.GeoSeries([p1]), crs='EPSG:4326')
+        dgp_bbox_poly = dask_geopandas.from_geopandas(
+            gp_bbox_poly, chunksize=1000)
+        spinner.next()
+        
+        # -----------------------------------------------------
+        path_zarr = os.path.join(pathData, dataset) + '.zarr'
+        print('\ncreating zarr dataset ... ' + path_zarr)
+        dset.to_zarr(path_zarr, compute=True, mode="w")
+        spinner.next()
+        
+        print('\ncreating dataframe ... ')
+        # z1 = zarr.open(path_zarr, mode='r')
+        # df = dset.to_dask_dataframe()
+        #print(z1)
+        #spinner.next()
 
-    print('creating dataframe ... ')
-    df = dset.to_dask_dataframe()
-    df = df.loc[df["qa_value"] >= 0.75]
-    
-    # -----------------------------------------------------
-    # create geo dask dataframe
-    print('creating geographic dataframe ... ')
-    ddf = df.set_geometry(dask_geopandas.points_from_xy(
-        df, 'latitude', 'longitude')).set_crs('EPSG:4326')
-    
-    # -----------------------------------------------------
-    # creare geo dataset from bbox
-    print('creating bbox dataframe ... ')
-    bbox_coordinates = str(os.getenv('BBOX')).split(',')
-    x = np.array(bbox_coordinates)
-    y = x.astype(np.float64)
-    p1 = shapely.geometry.box(*y, ccw=True)
-    gp_bbox_poly = geopandas.GeoDataFrame(
-    geometry=geopandas.GeoSeries([p1]), crs='EPSG:4326')
-    dgp_bbox_poly = dask_geopandas.from_geopandas(gp_bbox_poly, chunksize=1000)
-    
-    # -----------------------------------------------------
-    # intersect geo dataframe 
-    print('intersection dataframes ... ')
-    ddf_intersect = dask_geopandas.GeoDataFrame.sjoin(
-        ddf, dgp_bbox_poly).to_crs('EPSG:4326')
-    
-    if (len(ddf_intersect) > 0):
+        # -----------------------------------------------------
+        # create geo dask dataframe
+        #print('\ncreating geographic dataframe ... ')
+        #ddf = dask_geopandas.GeoDataFrame(dask_geopandas.points_from_xy(
+        #    z1, 'latitude', 'longitude')).set_crs('EPSG:4326')
+        #spinner.next()
         
-        # save data to postgis, image and parquet file 
-        print(ddf_intersect.head(5))
+        # -----------------------------------------------------
+        # intersect geo dataframe 
+        #print('\nintersection dataframes ... ')
+        #ddf_intersect = dask_geopandas.GeoDataFrame.sjoin(
+        #    ddf, dgp_bbox_poly).to_crs('EPSG:4326')
+        #spinner.next()
         
-        print('creating parquet files ... ')
-        path_parquet = os.path.join(pathData, dataset) + '.parquet'
-        ddf_intersect.to_parquet(path_parquet)
+        #if (len(ddf_intersect) > 0):
+            
+            # -----------------------------------------------------
+        #    print('\ncreating parquet files ... ')
+        #    path_parquet = os.path.join(pathData, dataset) + '.parquet'
+        #    ddf_intersect.to_parquet(path_parquet)
+        #    spinner.next()
+            
+            # -----------------------------------------------------
+        #    print('\nsave dataframe data to parquet file ... ')
+        #    df = geopandas.read_parquet(path_parquet).to_crs('EPSG:4326')
+        #    spinner.next()
+            
+            # -----------------------------------------------------
+            # updated postgis
+        #    print('\nsave dataframe data to db ... ')
+        #    df.to_postgis(os.getenv('POLLUTION').lower(),
+        #                            engine,
+        #                            if_exists="append",
+        #                            chunksize=10000)    
         
-        print('save dataframe data to db ... ')
-        df = geopandas.read_parquet(path_parquet).to_crs('EPSG:4326')
-
-        # updated postgis
-        df.to_postgis(os.getenv('POLLUTION').lower(),
-                                 engine,
-                                 if_exists="append",
-                                 chunksize=10000)
+        #else:
+            # delete dataset
+        #    print('\ndeleting dataset ...')
+        #    os.remove(path)
         
-    else:
-        # delete dataset
-        print('deleting dataset ...')
-        os.remove(path)
-        
-    print('finish.')
+        spinner.next()
+        spinner.finish()
+        return True
     
 def to_snake_case(s):
     return '_'.join(
@@ -122,10 +157,19 @@ def getPathDataset(root):
 
 # browse all directory
 def main():
+    
+    client = Client(n_workers=2, threads_per_worker=2, memory_limit='8GB')
+    client
+    
     for root, dirs, files in os.walk(pathDataset):
         for dataset in files:
-            process(dataset, os.path.join(pathDataset, dataset))
+            ncdDataSet = os.path.join(pathDataset, dataset)
+            if not (process(dataset, ncdDataSet)):
+                print(dataset + ' ERROR!')
 
 pathDataset = getPathDataset('/../datasets')
 pathData = getPathDataset('/../data/process')
-main()
+
+if __name__ == '__main__':
+    freeze_support()
+    main()
