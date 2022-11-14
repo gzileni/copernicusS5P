@@ -11,19 +11,18 @@ services:
       PGPORT: ${PGPORT}
       PGHOST: ${PGHOST}
     healthcheck:
-      test: [ 'CMD-SHELL', 'pg_isready -U ${POSTGRES_DATABASE_NAME}' ]
+      test: [ 'CMD-SHELL', 'pg_isready -U ${POSTGRES_DB}' ]
       interval: 5s
       timeout: 5s
       retries: 5
     ports:
       - ${PGPORT}:${PGPORT}
     networks:
-      - copernicus-network
+      - copernicus
     volumes:
       - ./data/db:/var/lib/postgresql/data
     
   pgAdmin:
-    # wharp-db.hextra.dev
     container_name: copernicus-pgadmin
     image: dpage/pgadmin4
     restart: always
@@ -33,19 +32,49 @@ services:
       PGHOST: ${PGHOST}
       PGPORT: ${PGPORT}
     networks:
-      - copernicus-network
+      - copernicus
     ports:
       - '8081:80'
     depends_on:
       - db
 
+  scheduler:
+    image: ghcr.io/dask/dask:latest
+    container_name: copernicus-scheduler
+    hostname: scheduler
+    ports:
+      - "8786:8786"
+      - "8787:8787"
+    command: ["dask-scheduler"]
+    networks:
+      - copernicus
+
+  worker:
+    image: ghcr.io/dask/dask:latest
+    command: ["dask-worker", "tcp://scheduler:8786"]
+    # For Docker swarm you can specify multiple workers, this is ignored by `docker-compose up`
+    deploy:
+      replicas: 2
+    networks:
+      - copernicus
+
+  notebook:
+    image: ghcr.io/dask/dask-notebook:latest
+    container_name: copernicus-notebook
+    ports:
+      - "8888:8888"
+    environment:
+      - DASK_SCHEDULER_ADDRESS="tcp://scheduler:8786"
+    networks:
+      - copernicus
+
 networks:
-   copernicus-network:
+   copernicus:
       driver: bridge
       ipam:
          driver: default
          config:
-            - subnet: 192.168.199.0/24
+            - subnet: 192.168.198.0/24
 
 volumes:
   db:
