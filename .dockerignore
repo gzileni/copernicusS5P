@@ -1,6 +1,7 @@
 datasets/*
 data/*
-node_modules
-process/env/*
+node_modules/
 .DS_Store
 .env
+.vscode/
+.venv/

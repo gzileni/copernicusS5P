@@ -1,18 +1,15 @@
-#!/usr/bin/python3
-
 import os
 import pathlib
-from multiprocessing import Process, freeze_support
+from multiprocessing import freeze_support
 from re import sub
 
+import xarray as xr
 import dask
 import dask_geopandas
 import geopandas
 import matplotlib.pyplot as plt
-import nctoolkit as nc
 import numpy as np
 import shapely.geometry
-
 from dask.distributed import Client
 from dotenv import load_dotenv
 from progress.spinner import Spinner
@@ -46,18 +43,16 @@ def process(dataset, path):
         }
         
         try:
-            dset = nc.open_data(path)
-            #dset = xr.open_dataset(path,
-            #                    engine="netcdf4",
-            #                    group="PRODUCT",
-            #                    cache=True,
-            #                    inline_array=True,
-            #                    chunks=chunks)
-            print(dset.head(5))
-            print('\nDim: ' + str(dset.nbytes * (2 ** -30)) + ' GB')
+            dset = xr.open_dataset(path,
+                                engine="netcdf4",
+                                group="PRODUCT",
+                                cache=True,
+                                inline_array=True,
+                                chunks=chunks)
+            # print(dset.head(5))
             spinner.next()
         except:
-            os.remove(path)
+            #os.remove(path)
             spinner.next()
             return False
         
@@ -76,59 +71,67 @@ def process(dataset, path):
         
         # -----------------------------------------------------
         print('\nfiltering data ...')
-        dset = dset.crop(lon=[7, 8], lat=[44, 45])
         dset = dset.where(dset.qa_value >= 0.75)
         spinner.next()
         
         # -----------------------------------------------------
         print('\ncreating dataframe ... ')
-        # df = dset.to_dask_dataframe()
-        df = dset.ds.to_dataframe()
-        print('dataframe pandas: ' + df.head(5))
+        df = dset.to_dask_dataframe()
         spinner.next()
+        
+        print('\ncreating parquet file ... ')
+        df.to_parquet(os.path.join(pathData, dataset) +
+                      '.parquet', engine='pyarrow')
+        spinner.next()
+        
+        # print('\ncreating geo dataframe ... ')
+        # gdf = dask_geopandas.from_dask_dataframe(
+        #    df,
+        #    geometry=dask_geopandas.points_from_xy(
+        #        df, "longitude", "latitude"),
+        #)
+        #df.head()
+        #spinner.next()
+        
+        # -----------------------------------------------------
+        #print('\ncreating parquet files ... ')
+        #path_csv = os.path.join(pathData, dataset) + '.csv'
+        #df.to_csv(path_csv)
+        #spinner.next()
 
         # -----------------------------------------------------
         # create geo dask dataframe
-        print('\ncreating geographic dataframe ... ')
-        ddf = dask_geopandas.GeoDataFrame(dask_geopandas.points_from_xy(
-            df, 'latitude', 'longitude')).set_crs('EPSG:4326')
-        spinner.next()
+        #print('\ncreating geographic dataframe ... ')
+        #dgp = dask_geopandas.read_csv(path_csv)
+        #print(dgp.head(5))
+        #ddf = dask_geopandas.GeoDataFrame(dask_geopandas.points_from_xy(
+        #    df, 'latitude', 'longitude')).set_crs('EPSG:4326')
+        #spinner.next()
         
         # -----------------------------------------------------
         # intersect geo dataframe 
-        print('\nintersection dataframes ... ')
-        ddf_intersect = dask_geopandas.GeoDataFrame.sjoin(
-            ddf, dgp_bbox_poly).to_crs('EPSG:4326')
-        spinner.next()
+        #print('\nintersection dataframes ... ')
+        #dgp_intersect = dask_geopandas.GeoDataFrame.sjoin(
+        #    gdf, dgp_bbox_poly).to_crs('EPSG:4326')
+        #spinner.next()
         
-        if (len(ddf_intersect) > 0):
-            
-            # -----------------------------------------------------
-            print('\ncreating parquet files ... ')
-            path_parquet = os.path.join(pathData, dataset) + '.parquet'
-            ddf_intersect.to_parquet(path_parquet)
-            spinner.next()
-            
-            # -----------------------------------------------------
-            print('\nsave dataframe data to parquet file ... ')
-            df = geopandas.read_parquet(path_parquet).to_crs('EPSG:4326')
-            spinner.next()
+        #if (len(dgp_intersect) > 0):
             
             # -----------------------------------------------------
             # updated postgis
-            print('\nsave dataframe data to db ... ')
-            df.to_postgis(os.getenv('POLLUTION').lower(),
-                                    engine,
-                                    if_exists="append",
-                                    chunksize=10000)    
-        else:
+        #    print('\nsave dataframe data to db ... ')
+        #    df.to_postgis(os.getenv('POLLUTION').lower(),
+        #                            engine,
+        #                            if_exists="append",
+        #                            chunksize=10000)    
+        #else:
             # delete dataset
-            print('\ndeleting dataset ...')
-            os.remove(path)
+        #    print('\ndeleting dataset ...')
+        #    os.remove(path)
         
-        spinner.next()
-        spinner.finish()
-        return True
+        #spinner.next()
+        #spinner.finish()
+        #return True
     
 def to_snake_case(s):
     return '_'.join(
@@ -162,8 +165,7 @@ def getPathDataset(root):
 # browse all directory
 def main():
     
-    scheduler = str(os.getenv('DASK_SCHEDULER')) + \
-        ':' + str(os.getenv('DASK_SCHEDULER_PORT'))
+    scheduler = str(os.getenv('DASK_SCHEDULER')) + ':8786'
 
     client = Client(scheduler)
     client
@@ -176,6 +178,7 @@ def main():
             if not (process(dataset, ncdDataSet)):
                 print(dataset + ' ERROR!')
 
+
 if __name__ == '__main__':
-    freeze_support()
+    freeze_support()    
     main()
